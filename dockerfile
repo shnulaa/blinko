@@ -36,7 +36,7 @@ RUN if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then \
     fi
 
 # Install Dependencies and Build App
-RUN bun install --unsafe-perm
+RUN bun install --unsafe-perm --verbose
 RUN bunx prisma generate
 RUN bun run build:web
 RUN bun run build:seed
