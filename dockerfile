@@ -40,7 +40,8 @@ RUN printf '#!/bin/sh\necho "Current Environment: $NODE_ENV"\nnpx prisma migrate
 # =================================================================
 # Init Downloader Stage - 专门用于下载 dumb-init，保持最终镜像干净
 # =================================================================
-FROM node:20-alpine as init-downloader
+FROM node:20-alpine AS init-downloader # <<< 修复：将 as 改为 AS
+
 WORKDIR /app
 RUN wget -qO /app/dumb-init https://github.com/Yelp/dumb-init/releases/download/v1.2.5/dumb-init_1.2.5_$(uname -m) && \
     chmod +x /app/dumb-init
@@ -48,7 +49,7 @@ RUN wget -qO /app/dumb-init https://github.com/Yelp/dumb-init/releases/download/
 # =================================================================
 # Final Runner Stage - 同样使用 Debian (slim) 镜像，保证环境兼容
 # =================================================================
-FROM node:20-slim AS runner  # <<< 关键修改：从 alpine 改为 slim
+FROM node:20-slim AS runner # <<< 修复：这是一个语法干净的行
 
 WORKDIR /app
 
@@ -57,23 +58,21 @@ ENV NODE_ENV=production
 ENV DISABLE_SECURE_COOKIE=false
 ENV TRUST_PROXY=1
 
-# <<< 关键修改：安装运行时的系统依赖
+# 安装运行时的系统依赖
 # 只安装 sharp 运行时需要的 libvips，而不是完整的 -dev 开发包
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvips \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# <<< 关键修改：直接从 builder 复制构建好的 node_modules 和应用代码
+# 从 builder 复制构建好的 node_modules 和应用代码
 # 这是多阶段构建的核心优势，避免在最终镜像中重新安装或编译
 COPY --from=builder /app/dist ./server
 COPY --from=builder /app/server/lute.min.js ./server/lute.min.js
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules ./node_modules  # <<< 直接复制兼容的 node_modules
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/start.sh ./
 COPY --from=init-downloader /app/dumb-init /usr/local/bin/dumb-init
-
-# <<< 移除：所有在 runner 阶段的 npm install, apk add, apk del 命令都已不再需要
 
 # 暴露端口
 EXPOSE 1111
