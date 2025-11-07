@@ -1,25 +1,23 @@
-# Build Stage
-# FROM oven/bun:latest AS builder
+# =================================================================
+# Build Stage - 在 Debian (slim) 环境中构建应用
+# =================================================================
 FROM oven/bun:1-slim AS builder
 
-# Add Build Arguments
+# 添加构建参数
 ARG USE_MIRROR=false
 
 WORKDIR /app
 
-# Set Sharp environment variables to speed up ARM installation
+# 设置 Sharp 和 Prisma 的环境变量，使用国内镜像加速安装
 ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
 ENV npm_config_sharp_binary_host="https://npmmirror.com/mirrors/sharp"
 ENV npm_config_sharp_libvips_binary_host="https://npmmirror.com/mirrors/sharp-libvips"
-
-# Set Prisma environment variables to optimize installation
 ENV PRISMA_ENGINES_MIRROR="https://registry.npmmirror.com/-/binary/prisma"
 ENV PRISMA_SKIP_POSTINSTALL_GENERATE=true
 
-# Copy Project Files
 COPY . .
 
-# Configure Mirror Based on USE_MIRROR Parameter
+# 根据参数配置镜像
 RUN if [ "$USE_MIRROR" = "true" ]; then \
         echo "Using Taobao Mirror to Install Dependencies" && \
         echo '{ "install": { "registry": "https://registry.npmmirror.com" } }' > .bunfig.json; \
@@ -27,95 +25,58 @@ RUN if [ "$USE_MIRROR" = "true" ]; then \
         echo "Using Default Mirror to Install Dependencies"; \
     fi
 
-# Pre-install Sharp for ARM architecture
-RUN if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then \
-        echo "Detected ARM architecture, installing sharp platform-specific dependencies..." && \
-        mkdir -p /tmp/sharp-cache && \
-        export SHARP_CACHE_DIRECTORY=/tmp/sharp-cache && \
-        bun install --platform=linux --arch=arm64 sharp@0.34.1 --no-save --unsafe-perm || \
-        bun install --force @img/sharp-linux-arm64 --no-save; \
-    fi
+# 安装所有依赖。在 Debian (slim) 环境下，原生模块可以直接下载预编译版本，稳定且快速
+RUN bun install --unsafe-perm
 
-# Install Dependencies and Build App
-RUN bun install --unsafe-perm --verbose
+# 生成 Prisma Client 并构建应用
 RUN bunx prisma generate
 RUN bun run build:web
 RUN bun run build:seed
 
+# 创建启动脚本
 RUN printf '#!/bin/sh\necho "Current Environment: $NODE_ENV"\nnpx prisma migrate deploy\nnode server/seed.js\nnode server/index.js\n' > start.sh && \
     chmod +x start.sh
 
-
+# =================================================================
+# Init Downloader Stage - 专门用于下载 dumb-init，保持最终镜像干净
+# =================================================================
 FROM node:20-alpine as init-downloader
-
 WORKDIR /app
-
 RUN wget -qO /app/dumb-init https://github.com/Yelp/dumb-init/releases/download/v1.2.5/dumb-init_1.2.5_$(uname -m) && \
-    chmod +x /app/dumb-init && \
-    rm -rf /var/cache/apk/*
+    chmod +x /app/dumb-init
 
-
-# Runtime Stage - Using Alpine as required
-FROM node:20-alpine AS runner
-
-# Add Build Arguments
-ARG USE_MIRROR=false
+# =================================================================
+# Final Runner Stage - 同样使用 Debian (slim) 镜像，保证环境兼容
+# =================================================================
+FROM node:20-slim AS runner  # <<< 关键修改：从 alpine 改为 slim
 
 WORKDIR /app
 
-# Environment Variables
+# 设置生产环境变量
 ENV NODE_ENV=production
-# If there is a proxy or load balancer behind HTTPS, you may need to disable secure cookies
 ENV DISABLE_SECURE_COOKIE=false
-# Set Trust Proxy
 ENV TRUST_PROXY=1
-# Set Sharp environment variables
-ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
-ENV npm_config_sharp_binary_host="https://npmmirror.com/mirrors/sharp"
-ENV npm_config_sharp_libvips_binary_host="https://npmmirror.com/mirrors/sharp-libvips"
 
-RUN apk add --no-cache openssl vips-dev python3 py3-setuptools make g++ gcc libc-dev linux-headers && \
-    if [ "$USE_MIRROR" = "true" ]; then \
-        echo "Using Taobao Mirror to Install Dependencies" && \
-        npm config set registry https://registry.npmmirror.com; \
-    else \
-        echo "Using Default Mirror to Install Dependencies"; \
-    fi
+# <<< 关键修改：安装运行时的系统依赖
+# 只安装 sharp 运行时需要的 libvips，而不是完整的 -dev 开发包
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libvips \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy Build Artifacts and Necessary Files
+# <<< 关键修改：直接从 builder 复制构建好的 node_modules 和应用代码
+# 这是多阶段构建的核心优势，避免在最终镜像中重新安装或编译
 COPY --from=builder /app/dist ./server
 COPY --from=builder /app/server/lute.min.js ./server/lute.min.js
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma/client ./node_modules/.prisma/client
+COPY --from=builder /app/node_modules ./node_modules  # <<< 直接复制兼容的 node_modules
 COPY --from=builder /app/start.sh ./
 COPY --from=init-downloader /app/dumb-init /usr/local/bin/dumb-init
 
-RUN chmod +x ./start.sh && \
-    ls -la start.sh
+# <<< 移除：所有在 runner 阶段的 npm install, apk add, apk del 命令都已不再需要
 
-RUN if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then \
-        echo "Detected ARM architecture, installing sharp platform-specific dependencies..." && \
-        mkdir -p /tmp/sharp-cache && \
-        export SHARP_CACHE_DIRECTORY=/tmp/sharp-cache && \
-        npm install --platform=linux --arch=arm64 sharp@0.34.1 --no-save --unsafe-perm || \
-        npm install --force @img/sharp-linux-arm64 --no-save; \
-    fi
-
-# Install dependencies with --ignore-scripts to skip native compilation
-RUN echo "Installing additional dependencies..." && \
-    npm install @node-rs/crc32 lightningcss sharp@0.34.1 prisma@5.21.1 && \
-    npm install -g prisma@5.21.1 && \
-    npm install sqlite3@5.1.7 && \
-    npm install llamaindex @langchain/community@0.3.40 && \
-    npm install @libsql/client @libsql/core && \
-    npx prisma generate && \
-    # find / -type d -name "onnxruntime-*" -exec rm -rf {} + 2>/dev/null || true && \
-    # npm cache clean --force && \
-    rm -rf /tmp/* && \
-    apk del python3 py3-setuptools make g++ gcc libc-dev linux-headers && \
-    rm -rf /var/cache/apk/* /root/.npm /root/.cache
-
-# Expose Port (Adjust According to Actual Application)
+# 暴露端口
 EXPOSE 1111
 
+# 使用 dumb-init 启动应用，这是最佳实践
 CMD ["/usr/local/bin/dumb-init", "--", "/bin/sh", "-c", "./start.sh"]
