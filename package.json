@@ -1,6 +1,6 @@
 {
   "name": "blinko-monorepo",
-  "version": "1.2.2",
+  "version": "v1",
   "private": true,
   "packageManager": "bun@1.2.8",
   "workspaces": [
