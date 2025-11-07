@@ -40,7 +40,7 @@ RUN printf '#!/bin/sh\necho "Current Environment: $NODE_ENV"\nnpx prisma migrate
 # =================================================================
 # Init Downloader Stage - 专门用于下载 dumb-init，保持最终镜像干净
 # =================================================================
-FROM node:20-alpine AS init-downloader # <<< 修复：将 as 改为 AS
+FROM node:20-alpine AS init-downloader
 
 WORKDIR /app
 RUN wget -qO /app/dumb-init https://github.com/Yelp/dumb-init/releases/download/v1.2.5/dumb-init_1.2.5_$(uname -m) && \
@@ -49,7 +49,7 @@ RUN wget -qO /app/dumb-init https://github.com/Yelp/dumb-init/releases/download/
 # =================================================================
 # Final Runner Stage - 同样使用 Debian (slim) 镜像，保证环境兼容
 # =================================================================
-FROM node:20-slim AS runner # <<< 修复：这是一个语法干净的行
+FROM node:20-slim AS runner
 
 WORKDIR /app
 
